@@ -1,0 +1,127 @@
+# Obter rapidamente o conteúdo do kubeconfig: cat ~/.kube/config
+trigger:
+  - main
+
+variables:
+  # Agent VM image name
+  vmImageName: 'ubuntu-latest'
+
+  namespaceJob: 'job-testes-$(Build.BuildId)'
+  projectDirectory: '$(Build.SourcesDirectory)/src/ConsoleAppJobHttpRequest'
+  containerRepository: 'job-httprequest'
+  kubernetesYamlDirectory: '$(Build.SourcesDirectory)/kubernetes'
+  workloadDefinition: 'job-notificacao-http.yaml'
+
+stages:
+- stage: Build
+  displayName: Build stage
+  jobs:
+  - job: Build
+    displayName: Build
+    pool:
+      vmImage: $(vmImageName)
+    variables:
+      - group: vg-container-registry
+    steps:
+    - task: Docker@2
+      inputs:
+        containerRegistry: 'groffecr01'
+        command: 'login'
+      displayName: 'Login no Container Registry'
+    - script: |
+        cd $(projectDirectory)
+        docker build . -t $(ContainerRegistry)/$(containerRepository):$(Build.BuildId)
+      displayName: 'Executar build da aplicacao'
+    - script: |
+        docker images
+      displayName: 'Executar imagens apos build'
+    - script: |
+        docker push $(ContainerRegistry)/$(containerRepository):$(Build.BuildId)
+      displayName: 'Efetuar push da imagem no Container Registry'
+- stage: Deployment
+  displayName: Deployment stage
+  dependsOn: Build
+  jobs:
+  - job: Deployment
+    displayName: Deployment
+    pool:
+      vmImage: $(vmImageName)
+    variables:
+      - group: vg-container-registry
+    steps:
+    - script: cat $(kubernetesYamlDirectory)/$(workloadDefinition)
+      displayName: 'Exibir conteudo do YAML com a definicao do Job'
+    - task: replacetokens@5
+      inputs:
+        targetFiles: '$(kubernetesYamlDirectory)/$(workloadDefinition)'
+        encoding: 'auto'
+        tokenPattern: 'default'
+        writeBOM: true
+        actionOnMissing: 'warn'
+        keepToken: false
+        actionOnNoFiles: 'continue'
+        enableTransforms: false
+        enableRecursion: false
+        useLegacyPattern: false
+        enableTelemetry: true
+      displayName: 'Atualizar YAML com a definicao do Job'
+    - script: cat $(kubernetesYamlDirectory)/$(workloadDefinition)
+      displayName: 'Exibir conteudo do YAML apos replaces'
+    - task: Kubernetes@1
+      inputs:
+        connectionType: 'Kubernetes Service Connection'
+        kubernetesServiceEndpoint: 'aks-testes'
+        command: 'login'
+      displayName: 'Efetuar login no cluster'
+    - script: kubectl get namespaces
+      displayName: 'Exibir namespaces existentes'
+    - script: |
+        kubectl create namespace $(namespaceJob)
+      displayName: 'Criar namespace para os testes'
+    - script: |
+        kubectl get namespaces
+      displayName: 'Verificar se o namespace foi criado'
+    - script: |
+        kubectl apply -f $(kubernetesYamlDirectory)/$(workloadDefinition) -n $(namespaceJob)
+      displayName: 'Aplicar YAML para execucao do Job'
+    - script: sleep 15s
+      displayName: 'Aguardar conclusão dos Job'
+    - script: |
+        echo "* Logs dos jobs de teste"
+        kubectl get jobs -n $(namespaceJob)
+        for job in $(kubectl get jobs -n $(namespaceJob) -o jsonpath='{.items[*].metadata.name}'); do
+          echo
+          echo
+          echo
+          echo "** Logs do job: $job"
+          kubectl logs job/$job -n $(namespaceJob)
+        done
+      displayName: 'Obter logs dos jobs de teste'
+    - script: |
+        {
+          echo "# Logs dos jobs de teste"
+          kubectl get jobs -n $(namespaceJob)
+          for job in $(kubectl get jobs -n $(namespaceJob) -o jsonpath='{.items[*].metadata.name}'); do
+            echo
+            echo
+            echo
+            echo "## Logs do job: $job"
+            kubectl logs job/$job -n $(namespaceJob)
+          done
+        } > jobs-logs.md
+      displayName: 'Obter logs dos jobs de teste e salvar em Markdown'
+    - script: |
+        sleep 10s
+        kubectl delete namespace $(namespaceJob)
+      displayName: 'Remover namespace de testes'
+    - script: |
+        pwd
+        echo
+        echo
+        ls -l
+      displayName: 'Verificar arquivos no diretório raiz'
+    - task: PublishMarkdownReports@1
+      inputs:
+        contentPath: '$(Build.SourcesDirectory)'
+        indexFile: 'jobs-logs.md'
+      displayName: Publicar resultado no formato Markdown

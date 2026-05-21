@@ -1,0 +1,14 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: job-httprequest
+spec:
+  template:
+    spec:
+      containers:
+      - name: job-httprequest
+        image: #{ContainerRegistry}#/#{containerRepository}#:#{Build.BuildId}#
+        env:
+        - name: EndpointRequest
+          value: "https://baconipsum.com/api/?type=meat-and-filler&paras=2&format=text"
+      restartPolicy: OnFailure
